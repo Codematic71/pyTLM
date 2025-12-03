@@ -100,6 +100,133 @@ class Widget:
     def handle_mouse(self, x: int, y: int, button: int) -> bool: return False
 
 
+
+# ----------------------------------------------------------------------
+# Container - Used to make composite wiget patterns
+# ----------------------------------------------------------------------
+
+class Container(Widget):
+    def __init__(self, x: int, y: int, width: int, height: int, **kwargs):
+        super().__init__(x, y, width, height, **kwargs)
+        self.children: List[Widget] = []
+        self.child_names: dict[str, Widget] = {}
+        self.focused_child: Optional[Widget] = None
+
+        # Optional background/fill properties for the container itself
+        self.bg_fg = kwargs.get("background_foreground", "default")
+        self.bg_bg = kwargs.get("background_background", "default")
+        self.bg_att = kwargs.get("background_attribute", "default")
+        self.bg_color = None
+
+    def add_widget(self, w: Widget) -> Widget:
+        # Set the child's parent to the same window as this container
+        if self.parent:
+            w.set_parent(self.parent)
+        self.children.append(w)
+        if w.name:
+            self.child_names[w.name] = w
+        self.request_repaint()
+        return w
+
+    def remove_widget(self, w: Widget) -> None:
+        if w in self.children:
+            self.children.remove(w)
+            if w.name and w.name in self.child_names:
+                del self.child_names[w.name]
+            if self.focused_child == w:
+                self.focused_child = None
+            self.request_repaint()
+
+    def get_child_by_name(self, name: str) -> Optional[Widget]:
+        return self.child_names.get(name)
+
+    def set_focus(self, w: Optional[Widget]) -> None:
+        if self.focused_child:
+            self.focused_child.focused = False
+        self.focused_child = w
+        if w:
+            w.focused = True
+        self.request_repaint()
+
+    def next_focus(self) -> None:
+        if not self.children:
+            return
+        i = (self.children.index(self.focused_child) + 1) % len(self.children) if self.focused_child else 0
+        self.set_focus(self.children[i])
+
+    def prev_focus(self) -> None:
+        if not self.children:
+            return
+        i = (self.children.index(self.focused_child) - 1) % len(self.children) if self.focused_child else -1
+        self.set_focus(self.children[i])
+
+    def paint(self, win) -> None:
+        # Paint the container's background if specified
+        if self.bg_color is None:
+            self.bg_color = cm(self.bg_fg, self.bg_bg, self.bg_att)
+        try:
+            for dy in range(self.height):
+                win.addstr(self.y + dy, self.x, " " * self.width, self.bg_color)
+        except curses.error:
+            pass
+
+        # Paint children with temporary absolute offset
+        for child in self.children:
+            if child.visible:
+                orig_x, orig_y = child.x, child.y
+                child.x += self.x
+                child.y += self.y
+                child.paint(win)
+                child.x, child.y = orig_x, orig_y
+
+    def contains(self, x: int, y: int) -> bool:
+        # Check if point is within container or any child (with relative coords)
+        if not (self.x <= x < self.x + self.width and self.y <= y < self.y + self.height):
+            return False
+        rel_x = x - self.x
+        rel_y = y - self.y
+        return any(child.contains(rel_x, rel_y) for child in self.children)
+
+    def handle_key(self, key: int) -> bool:
+        # Handle tab navigation within container
+        if key == ord('\t'):
+            self.next_focus()
+            return True
+        if key == curses.KEY_BTAB:
+            self.prev_focus()
+            return True
+
+        # Delegate to focused child first
+        if self.focused_child and self.focused_child.handle_key(key):
+            return True
+
+        # Then try all children in reverse (top-to-bottom)
+        for child in reversed(self.children):
+            if child.handle_key(key):
+                return True
+
+        return False
+
+    def handle_mouse(self, x: int, y: int, button: int) -> bool:
+        # Check if within container
+        if not (self.x <= x < self.x + self.width and self.y <= y < self.y + self.height):
+            return False
+
+        # Compute relative coordinates
+        rel_x = x - self.x
+        rel_y = y - self.y
+
+        # Delegate to children in reverse order (top-most first)
+        for child in reversed(self.children):
+            if child.contains(rel_x, rel_y) and child.handle_mouse(rel_x, rel_y, button):
+                # Optionally set focus to the clicked child if it handles the event
+                if button & curses.BUTTON1_PRESSED:
+                    self.set_focus(child)
+                return True
+
+        # Container itself doesn't handle mouse by default
+        return False
+    
 # ----------------------------------------------------------------------
 # Window
 # ----------------------------------------------------------------------
