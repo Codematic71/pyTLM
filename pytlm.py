@@ -67,6 +67,7 @@ def cm(fg: str = "default", bg: str = "default", att: str = "default") -> int:
 # ----------------------------------------------------------------------
 # Base Widget
 # ----------------------------------------------------------------------
+
 class Widget:
 
     def __init__(self, x: int, y: int, width: int, height: int = 1, **kwargs):
@@ -96,35 +97,46 @@ class Widget:
         return (self.x <= x < self.x + self.width and
                 self.y <= y < self.y + self.height)
 
-    def handle_key(self, key: int) -> bool: return False
-    def handle_mouse(self, x: int, y: int, button: int) -> bool: return False
+    def handle_key(self, key: int) -> bool:
+        return False
+    
+    def handle_mouse(self, x: int, y: int, button: int) -> bool:
+        return False
 
-
-
+    def handle_tick(self) :
+        return False
+    
 # ----------------------------------------------------------------------
 # Container - Used to make composite wiget patterns
 # ----------------------------------------------------------------------
 
 class Container(Widget):
+    
     def __init__(self, x: int, y: int, width: int, height: int, **kwargs):
+
         super().__init__(x, y, width, height, **kwargs)
-        self.children: List[Widget] = []
-        self.child_names: dict[str, Widget] = {}
-        self.focused_child: Optional[Widget] = None
+
+        self.children       = []
+        self.child_names    = {}
+        self.focused_child  = None
 
         # Optional background/fill properties for the container itself
-        self.bg_fg = kwargs.get("background_foreground", "default")
-        self.bg_bg = kwargs.get("background_background", "default")
-        self.bg_att = kwargs.get("background_attribute", "default")
+        self.bg_fg    = kwargs.get("background_foreground", "default")
+        self.bg_bg    = kwargs.get("background_background", "default")
+        self.bg_att   = kwargs.get("background_attribute", "default")
         self.bg_color = None
 
     def add_widget(self, w: Widget) -> Widget:
+
         # Set the child's parent to the same window as this container
         if self.parent:
             w.set_parent(self.parent)
+
         self.children.append(w)
+
         if w.name:
             self.child_names[w.name] = w
+
         self.request_repaint()
         return w
 
@@ -161,16 +173,23 @@ class Container(Widget):
         self.set_focus(self.children[i])
 
     def paint(self, win) -> None:
+
         # Paint the container's background if specified
         if self.bg_color is None:
             self.bg_color = cm(self.bg_fg, self.bg_bg, self.bg_att)
+
         try:
             for dy in range(self.height):
                 win.addstr(self.y + dy, self.x, " " * self.width, self.bg_color)
         except curses.error:
             pass
 
-        # Paint children with temporary absolute offset
+        #
+        # Because these child  widgets aren't based on a curses window, 
+        # we need to simulate the window based coordinates that widgets 
+        # expect, so paint the children with a temporary absolute offset.
+        # 
+
         for child in self.children:
             if child.visible:
                 orig_x, orig_y = child.x, child.y
@@ -407,9 +426,13 @@ class Window:
         for widget in reversed(self.widgets):
             if widget.handle_mouse(local_x, local_y, button):
                 return True
-            
-    def handle_resize(self, width, height) :
-        
+
+    def handle_tick(self) :
+
+        for widget in reversed(self.widgets) :
+            widget.handle_tick()            
+    
+    def handle_resize(self, width, height) :        
         pass
     
 # ----------------------------------------------------------------------
@@ -425,6 +448,8 @@ class WindowManager:
         
         self.window_names = {}
 
+        self.last_tick    = 0.0
+        
         (self.height, self.width) = stdscr.getmaxyx()
         
         curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
@@ -585,10 +610,17 @@ class WindowManager:
             self.stdscr.noutrefresh()
             curses.doupdate()
 
-            # === 4. FPS LIMIT ===
+            
+            # Time for a system Tick 1/10 sec
+            if (time.monotonic() - self.last_tick) >= (0.100) :
+                self.last_tick = time.monotonic()
+                for win in self.windows :
+                    win.handle_tick()
+
+             # === 4. FPS LIMIT ===
             elapsed = time.monotonic() - frame_start
             target = 1.0 / 60.0
-
+            
             if elapsed < target:
                 time.sleep(target - elapsed)
 
