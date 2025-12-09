@@ -87,11 +87,27 @@ class Widget:
     def set_parent(self, parent: "Window") -> None:
         self.parent = parent
 
+    def box(self, win, x, y, w, h, style) :
+
+        h -= 1
+        
+        win.hline(y, x, curses.ACS_HLINE, w, style)        
+        win.hline(y + h, x, curses.ACS_HLINE, w, style)
+        
+        win.vline(y, x, curses.ACS_VLINE, h, style)
+        win.vline(y, x + w, curses.ACS_VLINE, h, style)
+
+        win.addch(y, x, curses.ACS_ULCORNER, style)
+        win.addch(y + h, x, curses.ACS_LLCORNER, style)
+        win.addch(y, x + w, curses.ACS_URCORNER, style)
+        win.addch(y + h, x + w, curses.ACS_LRCORNER, style)
+        
     def request_repaint(self) :
         if self.parent :
             self.parent.request_repaint()
             
-    def paint(self, win) -> None: pass
+    def paint(self, win) -> None:
+        pass
 
     def contains(self, x: int, y: int) -> bool:
         return (self.x <= x < self.x + self.width and
@@ -121,11 +137,18 @@ class Container(Widget):
         self.focused_child  = None
 
         # Optional background/fill properties for the container itself
-        self.bg_fg    = kwargs.get("background_foreground", "default")
-        self.bg_bg    = kwargs.get("background_background", "default")
-        self.bg_att   = kwargs.get("background_attribute", "default")
-        self.bg_color = None
+        self.base_foreground  = kwargs.get("base_foreground", "default")
+        self.base_background  = kwargs.get("base_background", "default")
+        self.base_attribute   = kwargs.get("base_attribute",  "default")
+        self.base_color       = None
 
+
+        self.border_fg   = kwargs.get("border_foreground", "cyan")
+        self.border_bg   = kwargs.get("border_background", "default")
+        self.border_att  = kwargs.get("border_attribute",  "default")
+        self.border_color = None
+
+        
     def add_widget(self, w: Widget) -> Widget:
 
         # Set the child's parent to the same window as this container
@@ -174,16 +197,26 @@ class Container(Widget):
 
     def paint(self, win) -> None:
 
-        # Paint the container's background if specified
-        if self.bg_color is None:
-            self.bg_color = cm(self.bg_fg, self.bg_bg, self.bg_att)
+        # One time init colors
+        
+        if self.base_color is None:
+            self.base_color = cm(self.base_foreground, self.base_background, self.base_attribute)
 
+        if self.border_color is None :
+            self.border_color = cm(self.border_fg, self.border_bg, self.border_att)
+            
+        # Paint Background
+        
         try:
             for dy in range(self.height):
-                win.addstr(self.y + dy, self.x, " " * self.width, self.bg_color)
+                win.addstr(self.y + dy, self.x, " " * self.width, self.base_color)
         except curses.error:
             pass
 
+        # Paint box if requested...
+        
+        self.box(win, self.x, self.y, self.width, self.height, self.border_color)
+        
         #
         # Because these child  widgets aren't based on a curses window, 
         # we need to simulate the window based coordinates that widgets 
@@ -269,6 +302,7 @@ class Window:
         self.border_fg     = kwargs.get("border_foreground", "default")
         self.border_bg     = kwargs.get("border_background", "default")
         self.border_att    = kwargs.get("border_attribute",  "default")
+
         self.border_style  = kwargs.get("border_style",      "single") # single, double, solid, none
         self.border_color  = None
         
@@ -292,6 +326,11 @@ class Window:
         self.needs_repaint = True
 
         self.window_manager = None
+
+    def set_title(self, text):
+        
+        self.title = text
+        self.request_repaint()
         
     def get_manager(self) :
 
@@ -309,14 +348,35 @@ class Window:
         self.request_repaint()
 
         return w
+
+    def move_top(self) :
+        self.panel.top()
+
+    def move_botton(self) :
+        self.panel.bottom()
+
+    def move_forwared(self) :
+        self.panel.forward()
+
+    def move_backward(self) :
+        self.panel.backward()
+
+    def hide(self) :
+        self.panel.hide()
+
+    def show(self) :
+        self.panel.show()
         
     def set_focus(self, w: Optional[Widget]) -> None:
 
         if self.focused_widget:
             self.focused_widget.focused = False
+
         self.focused_widget = w
+
         if w:
             w.focused = True
+
         self.request_repaint()
 
     def next_focus(self) -> None:
@@ -351,15 +411,12 @@ class Window:
         if x != self.x or y != self.y :
 
             try :
-
-                result = self.win.mvwin(y, x)
-                
+                result = self.win.mvwin(y, x)                
             except Exception as e :
                 pass
                 
             self.x = x
-            self.y = y
-            
+            self.y = y            
             self.request_repaint()
 
         return result
@@ -442,12 +499,9 @@ class WindowManager:
     
     def __init__(self, stdscr):
 
-        self.stdscr = stdscr
-        self.windows: List[Window] = []
-        self.active_window: Optional[Window] = None
-        
-        self.window_names = {}
-
+        self.stdscr = stdscr        
+        self.window = {}
+        self.active_window = None
         self.last_tick    = 0.0
         
         (self.height, self.width) = stdscr.getmaxyx()
@@ -459,8 +513,8 @@ class WindowManager:
 
         result = None
     
-        if name in self.window_names :
-            result = self.window_names[name]
+        if name in self.window :
+            result = self.window[name]
 
         return result
     
@@ -472,8 +526,7 @@ class WindowManager:
         
         (window_str, widget_str) = name.split("/")
         
-        if window_str and widget_str :
-                            
+        if window_str and widget_str :                            
             window = self.get_window_byName(window_str)
             
             if window :        
@@ -484,12 +537,9 @@ class WindowManager:
     
                    
     def add_window(self, win: Window) -> Window:
-
-        # Add to window manager list.
-        self.windows.append(win)
         
         if win.name :           
-           self.window_names[win.name] = win
+           self.window[win.name] = win
            
         self.set_active_window(win)
 
@@ -600,27 +650,39 @@ class WindowManager:
                 key = self.stdscr.getch()
 
                 
-            # === 2. REPAINT ===
-            for win in self.windows:
-                win.paint()
+            # Call all the paint routines.
+            
+            panel = curses.panel.bottom_panel()
 
-            # === 3. REFRESH ===
+            while panel :
+                win = panel.userptr()
+                if win :
+                   win.paint()
+                panel = panel.above()
+                
+            # Refresh the actual screen.
             curses.panel.update_panels()
 
             self.stdscr.noutrefresh()
             curses.doupdate()
 
-            
+            #
             # Time for a system Tick 1/10 sec
+            #
+            
             if (time.monotonic() - self.last_tick) >= (0.100) :
                 self.last_tick = time.monotonic()
-                for win in self.windows :
-                    win.handle_tick()
+                panel = curses.panel.bottom_panel()
+                while panel :
+                    win = panel.userptr()
+                    if win :
+                        win.handle_tick()
+                    panel = panel.above()
 
              # === 4. FPS LIMIT ===
             elapsed = time.monotonic() - frame_start
             target = 1.0 / 60.0
-            
+
             if elapsed < target:
                 time.sleep(target - elapsed)
 
@@ -664,7 +726,12 @@ class Button(Widget):
         
         self.text = text
         self.request_repaint()
+
+    def click(self) :
         
+        if self.on_click :                      
+            self.on_click(button=self)
+            
     def paint(self, win):
 
         if self.normal_color == None :
@@ -703,6 +770,7 @@ class Button(Widget):
         if self.contains(x, y) :
             
             if self.state == 0 :                      # Button is IDLE
+                
                 if button & curses.BUTTON1_PRESSED :  # New Button is DOWN
                     self.state = 1                    # Transition to down... 
                     self.request_repaint()
@@ -711,6 +779,7 @@ class Button(Widget):
                         self.on_press(button=self)
                         
             elif self.state == 1 :                    # Wait for release
+                
                 if button & curses.BUTTON1_RELEASED : # Button is released
                     self.state = 0                    # Go back to IDLE
                     self.request_repaint()            # Get repainted for new state.
@@ -736,30 +805,45 @@ class StatusLabel(Widget):
         super().__init__(x, y, width, **kwargs)
         
         self.units        = kwargs.get("units",   "")
-        self.value        = kwargs.get("value",   "0")
+        self.value        = kwargs.get("value",  0.0)
         
-        self.normal_fg    = kwargs.get("normal_foreground", "white")
+        self.normal_fg    = kwargs.get("normal_foreground", "default")
         self.normal_bg    = kwargs.get("normal_background", "default")
         self.normal_att   = kwargs.get("normal_attribute",  "default")
         
-        self.fault_fg     = kwargs.get("fault_foreground",  "white")
+        self.fault_fg     = kwargs.get("fault_foreground",  "default")
         self.fault_bg     = kwargs.get("fault_background",  "default")
         self.fault_att    = kwargs.get("fault_attribute",   "default")
+
+        self.units_fg     = kwargs.get("units_foreground",  "default")
+        self.units_bg     = kwargs.get("units_background",  "default")
+        self.units_att    = kwargs.get("units_attribute",   "default")
         
         self.threshold    = kwargs.get("threshold",   "")        
         self.comparison   = kwargs.get("comparison",  "")
         self.fmt          = kwargs.get("format",      "")
 
+        self.scale          = kwargs.get("on_display",   "")
+        
         self.normal_color = None
         self.fault_color  = None
-                
-    def set_value(self, value: Any):
+        self.units_color  = None
         
-        self.value = value
-        self.request_repaint()
-            
-    def get_value(self) :
+    def set_value(self, value):
 
+        if isinstance(value, (int)) :
+            self.value = int(value)
+        elif isinstance(value, (float)) :
+            self.value = float(value)
+        elif isinstance(value, (str)) :
+            self.value = str(value)
+            
+        self.request_repaint()
+
+    def set_units(self, value) :
+        self.units = value
+        
+    def get_value(self) :
         return self.value
 
     def _compare_values(self) :
@@ -772,7 +856,7 @@ class StatusLabel(Widget):
         # Faulted text, normal text
         #
         
-        if isinstance(self.value, (int, float)) :                           
+        if isinstance(self.value, (int, float)) :
 
             if self.comparison == "LT" or self.comparison == "<" :
                 faulted = float(self.value) < float(self.threshold)
@@ -790,6 +874,7 @@ class StatusLabel(Widget):
                 faulted = self.value == self.threshold
 
         return faulted
+
     
     def paint(self, win):
 
@@ -803,11 +888,14 @@ class StatusLabel(Widget):
         # First Time Color Init
         
         if self.fault_color == None :
-                self.fault_color = cm(self.fault_fg, self.fault_bg, self.fault_att)
+            self.fault_color = cm(self.fault_fg, self.fault_bg, self.fault_att)
 
         if self.normal_color == None :
-                self.normal_color = cm(self.normal_fg, self.normal_bg, self.normal_att)
-                
+            self.normal_color = cm(self.normal_fg, self.normal_bg, self.normal_att)
+
+        if self.units_color == None :
+            self.units_color = cm(self.units_fg, self.units_bg, self.units_att)
+            
         # Get Style
 
         if faulted :
@@ -816,7 +904,10 @@ class StatusLabel(Widget):
             style = self.normal_color
 
         try:
+
             win.addstr(self.y, self.x, txt, style)
+            win.addstr(self.y, self.x + len(txt), f"{self.units}", self.units_color)
+            
         except curses.error:
             pass
 
